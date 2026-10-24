@@ -37,6 +37,12 @@ module Dependabot
       PATH_DEPENDENCY_CLEAN_REGEX = /^file:|^link:/
       DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
       BUN_LOCKFILE_NAME = "bun.lock"
+      INSTALLED_MANIFEST_DEPENDENCY_TYPES = %w(dependencies devDependencies optionalDependencies).freeze
+      MANIFEST_BUNDLE_FIELDS = %w(bundleDependencies bundledDependencies).freeze
+      # Manifest fields npm (lockfile v2+) copies into the root and workspace `packages` entries.
+      LOCKFILE_MANIFEST_SNAPSHOT_FIELDS = %w(
+        dependencies devDependencies optionalDependencies peerDependencies peerDependenciesMeta
+      ).freeze
 
       sig { override.params(filenames: T::Array[String]).returns(T::Boolean) }
       def self.required_files_in?(filenames)
@@ -261,9 +267,140 @@ module Dependabot
           !NpmAndYarn::FileUpdater::NpmrcBuilder::CENTRAL_REGISTRIES.include?(normalized)
         end
         return if private_registry_creds.empty?
+        # The project doesn't need the private registry (e.g. an org-wide one) if its
+        # lockfile resolves every package from a public registry.
+        return if lockfile_resolves_only_from_public_registries?
 
         registry = private_registry_creds.first&.fetch("registry", nil) || "unknown"
         raise Dependabot::PrivateRegistryConfigNotFound, registry
+      end
+
+      # Only trusts an in-sync npm lockfile v2+; anything it can't verify keeps the error.
+      sig { returns(T::Boolean) }
+      def lockfile_resolves_only_from_public_registries?
+        return false if npm_lockfile_may_not_cover_project?
+
+        # npm uses npm-shrinkwrap.json over package-lock.json when both exist.
+        lockfile = shrinkwrap || package_lock
+        return false unless lockfile
+
+        packages = FileParser::JsonLock.new(lockfile).parsed.package_entries
+        return false unless lockfile_in_sync_with_manifests?(lockfile, packages)
+
+        hosts = lockfile_registry_hosts(packages)
+        return false if hosts.nil? || hosts.empty?
+
+        hosts.all? { |host| NpmAndYarn::FileUpdater::NpmrcBuilder::CENTRAL_REGISTRIES.include?(host) }
+      rescue Dependabot::DependencyFileNotParseable, JSON::ParserError
+        false
+      end
+
+      # Other lockfiles, and Lerna packages outside npm workspaces, may resolve from the private
+      # registry. npm doesn't record `overrides` in the lockfile, so it can't show they're applied.
+      sig { returns(T::Boolean) }
+      def npm_lockfile_may_not_cover_project?
+        return true if yarn_lock || pnpm_lock || bun_lock
+        return true unless [nil, {}].include?(parsed_package_json["overrides"])
+
+        workspace_files = workspace_package_jsons.map(&:name)
+        lerna_packages.any? { |file| !workspace_files.include?(file.name) }
+      end
+
+      # Lockfile v2+ copies each manifest's requirements into its `packages` entry. Lockfile v1
+      # doesn't, and a local package outside the workspaces (e.g. a `file:` directory) has a
+      # manifest that isn't compared, so neither shows whether the lockfile is stale.
+      sig { params(lockfile: DependencyFile, packages: T::Hash[String, FileParser::JsonLock::Record]).returns(T::Boolean) }
+      def lockfile_in_sync_with_manifests?(lockfile, packages)
+        return false if packages.empty?
+
+        locked_manifests = JSON.parse(T.must(lockfile.content)).fetch("packages")
+        manifests = ([package_json] + workspace_package_jsons).to_h do |manifest|
+          dir = Pathname.new(manifest.name).dirname.cleanpath.to_s
+          [dir == "." ? "" : dir, manifest]
+        end
+        local_package_keys = packages.keys.reject { |key| key.include?("node_modules/") }
+        return false unless local_package_keys.all? { |key| manifests.key?(key) }
+
+        manifests.all? { |key, manifest| manifest_locked?(manifest, key, locked_manifests[key], packages) }
+      end
+
+      sig do
+        params(
+          manifest: DependencyFile,
+          key: String,
+          locked: T.untyped,
+          packages: T::Hash[String, FileParser::JsonLock::Record]
+        ).returns(T::Boolean)
+      end
+      def manifest_locked?(manifest, key, locked, packages)
+        manifest_json = JSON.parse(T.must(manifest.content))
+        return false unless locked.is_a?(Hash) && manifest_json.is_a?(Hash)
+        # npm downloads a manifest's own bundled dependencies, yet marks them `inBundle` like
+        # the ones that ship inside a package tarball.
+        return false if MANIFEST_BUNDLE_FIELDS.any? { |field| manifest_json.key?(field) }
+
+        LOCKFILE_MANIFEST_SNAPSHOT_FIELDS.all? { |field| (manifest_json[field] || {}) == (locked[field] || {}) } &&
+          manifest_dependencies_installed?(manifest_json, key, packages)
+      end
+
+      # npm installs a manifest's dependencies in its own node_modules or hoists them to the root.
+      sig do
+        params(
+          manifest_json: T::Hash[String, T.untyped],
+          key: String,
+          packages: T::Hash[String, FileParser::JsonLock::Record]
+        ).returns(T::Boolean)
+      end
+      def manifest_dependencies_installed?(manifest_json, key, packages)
+        prefix = key.empty? ? "" : "#{key}/"
+        installed_dependency_names(manifest_json).all? do |name|
+          packages.key?("node_modules/#{name}") || packages.key?("#{prefix}node_modules/#{name}")
+        end
+      end
+
+      sig { params(manifest_json: T::Hash[String, T.untyped]).returns(T::Array[String]) }
+      def installed_dependency_names(manifest_json)
+        names = INSTALLED_MANIFEST_DEPENDENCY_TYPES.flat_map { |type| object_keys(manifest_json[type]) }
+        peer_meta = manifest_json["peerDependenciesMeta"]
+        optional_peers = object_keys(peer_meta).select do |name|
+          peer_meta[name].is_a?(Hash) && peer_meta[name]["optional"]
+        end
+
+        names + (object_keys(manifest_json["peerDependencies"]) - optional_peers)
+      end
+
+      sig { params(value: T.untyped).returns(T::Array[String]) }
+      def object_keys(value)
+        value.is_a?(Hash) ? value.keys : []
+      end
+
+      # Returns the host of every remote package's `resolved` URL, or nil if a remote package has
+      # no HTTP(S) `resolved` URL (e.g. a git source, or `resolved` was omitted).
+      sig { params(packages: T::Hash[String, FileParser::JsonLock::Record]).returns(T.nilable(T::Array[String])) }
+      def lockfile_registry_hosts(packages)
+        hosts = T.let([], T::Array[String])
+
+        packages.each do |key, entry|
+          next if local_lockfile_entry?(key, entry)
+
+          uri = entry.registry_uri("")
+          host = uri&.host
+          return nil unless uri.is_a?(URI::HTTP) && host && !host.empty?
+
+          hosts << host.downcase
+        end
+
+        hosts.uniq
+      end
+
+      # Root, workspace and other local directories, links, packages bundled inside a tarball and
+      # local `file:` tarballs aren't fetched from a registry.
+      sig { params(key: String, entry: FileParser::JsonLock::Record).returns(T::Boolean) }
+      def local_lockfile_entry?(key, entry)
+        return true unless key.include?("node_modules/")
+        return true if entry.link? || entry.in_bundle?
+
+        PATH_DEPENDENCY_CLEAN_REGEX.match?(entry.resolved.to_s)
       end
 
       sig { returns(T::Boolean) }
