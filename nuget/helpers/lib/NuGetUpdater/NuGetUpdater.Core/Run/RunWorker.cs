@@ -210,6 +210,25 @@ public class RunWorker
             .SelectMany(c => c.UpdateTypes ?? [])
             .ToHashSet();
 
+        // if every allow rule matching the dependency lists update types, the update types none of them allow are ignored
+        if (!job.SecurityUpdatesOnly)
+        {
+            var matchingAllowedUpdates = job.AllowedUpdates
+                .Where(a => a.DependencyName is null || FileSystemName.MatchesSimpleExpression(a.DependencyName, dependency.Name))
+                .ToArray();
+            if (matchingAllowedUpdates.Length > 0 && matchingAllowedUpdates.All(a => (a.UpdateTypes ?? []).Length > 0))
+            {
+                var allowedUpdateTypes = matchingAllowedUpdates.SelectMany(a => a.UpdateTypes!).ToHashSet();
+                foreach (var updateType in Enum.GetValues<ConditionUpdateType>())
+                {
+                    if (!allowedUpdateTypes.Contains(updateType))
+                    {
+                        ignoredUpdateTypes.Add(updateType);
+                    }
+                }
+            }
+        }
+
         // if an update type isn't explicitly allowed by a group matcher, add it to the ignored set
         foreach (var groupMatcher in groupMatchers)
         {

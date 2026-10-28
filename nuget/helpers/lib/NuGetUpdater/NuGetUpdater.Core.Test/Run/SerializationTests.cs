@@ -397,6 +397,31 @@ public class SerializationTests : TestBase
     }
 
     [Fact]
+    public void DeserializeAllowedUpdatesWithUpdateTypes()
+    {
+        var jobWrapperJson = """
+            {
+                "job": {
+                    "source": {
+                        "provider": "github",
+                        "repo": "some/repo"
+                    },
+                    "allowed-updates": [
+                        {
+                            "dependency-name": "Microsoft.*",
+                            "update-types": ["version-update:semver-patch", "version-update:semver-minor"]
+                        }
+                    ]
+                }
+            }
+            """;
+        var jobWrapper = RunWorker.Deserialize(jobWrapperJson)!;
+        var allowedUpdate = Assert.Single(jobWrapper.Job.AllowedUpdates);
+        Assert.Equal("Microsoft.*", allowedUpdate.DependencyName);
+        Assert.Equal([ConditionUpdateType.SemVerPatch, ConditionUpdateType.SemVerMinor], allowedUpdate.UpdateTypes);
+    }
+
+    [Fact]
     public void DeserializeDependencyGroups()
     {
         var jsonWrapperJson = """

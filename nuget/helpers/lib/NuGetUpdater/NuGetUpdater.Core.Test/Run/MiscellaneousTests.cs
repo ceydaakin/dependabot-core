@@ -1083,6 +1083,125 @@ public class MiscellaneousTests
             },
         ];
 
+        // allow rules with update types; update types not allowed by any matching rule are ignored
+        yield return
+        [
+            // job
+            new Job()
+            {
+                Source = new()
+                {
+                    Provider = "github",
+                    Repo = "some/repo",
+                },
+                AllowedUpdates = [
+                    new AllowedUpdate()
+                    {
+                        DependencyName = "Microsoft.*",
+                        UpdateTypes = [ConditionUpdateType.SemVerPatch, ConditionUpdateType.SemVerMinor],
+                    },
+                    new AllowedUpdate()
+                    {
+                        DependencyName = "*",
+                        UpdateTypes = [ConditionUpdateType.SemVerPatch],
+                    },
+                ],
+            },
+            // dependency
+            new Dependency("Some.Dependency", "1.0.0", DependencyType.PackageReference),
+            // groupMatcher
+            null,
+            // expectedDependencyInfo
+            new DependencyInfo()
+            {
+                Name = "Some.Dependency",
+                Version = "1.0.0",
+                IsVulnerable = false,
+                IgnoredVersions = [],
+                Vulnerabilities = [],
+                IgnoredUpdateTypes = [ConditionUpdateType.SemVerMajor, ConditionUpdateType.SemVerMinor],
+            },
+        ];
+
+        // allow rules with update types; the union of all matching rules is allowed
+        yield return
+        [
+            // job
+            new Job()
+            {
+                Source = new()
+                {
+                    Provider = "github",
+                    Repo = "some/repo",
+                },
+                AllowedUpdates = [
+                    new AllowedUpdate()
+                    {
+                        DependencyName = "Microsoft.*",
+                        UpdateTypes = [ConditionUpdateType.SemVerPatch, ConditionUpdateType.SemVerMinor],
+                    },
+                    new AllowedUpdate()
+                    {
+                        DependencyName = "*",
+                        UpdateTypes = [ConditionUpdateType.SemVerPatch],
+                    },
+                ],
+            },
+            // dependency
+            new Dependency("Microsoft.Some.Dependency", "1.0.0", DependencyType.PackageReference),
+            // groupMatcher
+            null,
+            // expectedDependencyInfo
+            new DependencyInfo()
+            {
+                Name = "Microsoft.Some.Dependency",
+                Version = "1.0.0",
+                IsVulnerable = false,
+                IgnoredVersions = [],
+                Vulnerabilities = [],
+                IgnoredUpdateTypes = [ConditionUpdateType.SemVerMajor],
+            },
+        ];
+
+        // allow rules with update types; a matching rule without update types allows everything
+        yield return
+        [
+            // job
+            new Job()
+            {
+                Source = new()
+                {
+                    Provider = "github",
+                    Repo = "some/repo",
+                },
+                AllowedUpdates = [
+                    new AllowedUpdate()
+                    {
+                        DependencyName = "Some.*",
+                        UpdateTypes = [ConditionUpdateType.SemVerPatch],
+                    },
+                    new AllowedUpdate()
+                    {
+                        DependencyName = "*",
+                    },
+                ],
+            },
+            // dependency
+            new Dependency("Some.Dependency", "1.0.0", DependencyType.PackageReference),
+            // groupMatcher
+            null,
+            // expectedDependencyInfo
+            new DependencyInfo()
+            {
+                Name = "Some.Dependency",
+                Version = "1.0.0",
+                IsVulnerable = false,
+                IgnoredVersions = [],
+                Vulnerabilities = [],
+                IgnoredUpdateTypes = [],
+            },
+        ];
+
         // with cooldown object when `include` and `exclude` are empty
         yield return
         [
