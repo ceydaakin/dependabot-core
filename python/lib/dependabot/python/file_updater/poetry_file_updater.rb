@@ -17,6 +17,7 @@ require "dependabot/python/name_normaliser"
 require "dependabot/python/poetry_plugin_installer"
 require "dependabot/python/poetry_subdependency_pin"
 require "dependabot/package/release_cooldown_options"
+require "dependabot/update_checkers/cooldown_calculation"
 
 module Dependabot
   module Python
@@ -364,15 +365,53 @@ module Dependabot
         # Using `--no-interaction` avoids asking for passwords.
         sig { returns(String) }
         def run_poetry_update_command
+          days = cooldown_release_age_days
           run_poetry_command(
             "pyenv exec poetry update #{dependency.name} --lock --no-interaction",
-            fingerprint: "pyenv exec poetry update <dependency_name> --lock --no-interaction"
+            fingerprint: "pyenv exec poetry update <dependency_name> --lock --no-interaction",
+            env: days ? { "POETRY_SOLVER_MIN_RELEASE_AGE" => days.to_s } : {}
           )
         end
 
-        sig { params(command: String, fingerprint: T.nilable(String)).returns(String) }
-        def run_poetry_command(command, fingerprint: nil)
-          SharedHelpers.run_shell_command(command, fingerprint: fingerprint)
+        # The cooldown window (in days) to apply to the whole resolution through
+        # Poetry's `solver.min-release-age` (Poetry >= 2.4), so transitive
+        # dependencies are held back too. It is the window the update checker used
+        # to select this dependency's target version, so the gate never rejects the
+        # version Dependabot chose. Returns nil (no gate) when cooldown is unset or
+        # does not apply to this dependency; security updates arrive with no cooldown.
+        sig { returns(T.nilable(Integer)) }
+        def cooldown_release_age_days
+          cooldown = @cooldown
+          return nil if cooldown.nil? || !cooldown.included?(dependency.name)
+
+          new_version = parsed_version(dependency.version)
+          days =
+            if new_version
+              # A dependency absent from the lockfile was selected under `default_days`.
+              [
+                Dependabot::UpdateCheckers::CooldownCalculation.cooldown_days_for(
+                  cooldown, parsed_version(dependency.previous_version), new_version
+                ),
+                cooldown.default_days
+              ].min
+            else
+              cooldown.default_days
+            end
+          days.positive? ? days : nil
+        end
+
+        sig { params(version: T.nilable(String)).returns(T.nilable(Dependabot::Python::Version)) }
+        def parsed_version(version)
+          return nil unless version && Dependabot::Python::Version.correct?(version)
+
+          Dependabot::Python::Version.new(version)
+        end
+
+        sig do
+          params(command: String, fingerprint: T.nilable(String), env: T::Hash[String, String]).returns(String)
+        end
+        def run_poetry_command(command, fingerprint: nil, env: {})
+          SharedHelpers.run_shell_command(command, fingerprint: fingerprint, env: env)
         end
 
         sig { params(pyproject_content: Object).returns(Integer) }

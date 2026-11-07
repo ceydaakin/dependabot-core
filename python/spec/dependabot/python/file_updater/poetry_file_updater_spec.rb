@@ -1774,6 +1774,61 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
     end
   end
 
+  describe "#run_poetry_update_command" do
+    subject(:run_update) { cooldown_updater.send(:run_poetry_update_command) }
+
+    let(:cooldown_updater) do
+      described_class.new(
+        dependency_files: dependency_files,
+        dependencies: [dependency],
+        credentials: credentials,
+        cooldown: cooldown
+      )
+    end
+    let(:cooldown) { Dependabot::Package::ReleaseCooldownOptions.new(default_days: 10) }
+    let(:command) { "pyenv exec poetry update requests --lock --no-interaction" }
+
+    before { allow(Dependabot::SharedHelpers).to receive(:run_shell_command).and_return("") }
+
+    def expect_update_env(env)
+      run_update
+      expect(Dependabot::SharedHelpers).to have_received(:run_shell_command)
+        .with(command, fingerprint: anything, env: env)
+    end
+
+    it "holds transitive dependencies back with Poetry's release-age gate" do
+      expect_update_env("POETRY_SOLVER_MIN_RELEASE_AGE" => "10")
+    end
+
+    context "with a shorter semver window than the default" do
+      let(:cooldown) do
+        Dependabot::Package::ReleaseCooldownOptions.new(default_days: 10, semver_minor_days: 3)
+      end
+
+      it "uses the window that selected the version (2.18.0 -> 2.19.1 is a minor bump)" do
+        expect_update_env("POETRY_SOLVER_MIN_RELEASE_AGE" => "3")
+      end
+    end
+
+    context "when the dependency is excluded from cooldown" do
+      let(:cooldown) { Dependabot::Package::ReleaseCooldownOptions.new(default_days: 10, exclude: ["requests"]) }
+
+      it("sets no release-age gate") { expect_update_env({}) }
+    end
+
+    context "when cooldown is zero days" do
+      let(:cooldown) { Dependabot::Package::ReleaseCooldownOptions.new(default_days: 0) }
+
+      it("sets no release-age gate") { expect_update_env({}) }
+    end
+
+    context "without cooldown" do
+      let(:cooldown) { nil }
+
+      it("sets no release-age gate") { expect_update_env({}) }
+    end
+  end
+
   describe "#prepared_project_file" do
     subject(:prepared_project) { updater_with_cooldown.send(:prepared_pyproject) }
 
