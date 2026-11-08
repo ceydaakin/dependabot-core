@@ -49,11 +49,10 @@ module Dependabot
         end
 
         version_class = Dependabot::Utils.version_class_for_package_manager(job.package_manager)
-        unless version_class.correct?(dependency.version.to_s) && version_class.correct?(checker.latest_version)
-          return false
-        end
+        current_version = comparable_version_string(version_class, dependency.version.to_s)
+        return false unless version_class.correct?(current_version) && version_class.correct?(checker.latest_version)
 
-        version = version_class.new(dependency.version.to_s)
+        version = version_class.new(current_version)
         latest_version = version_class.new(checker.latest_version)
 
         # Not every version class implements .major, .minor, .patch so we calculate it here from the segments
@@ -75,6 +74,16 @@ module Dependabot
 
       sig { returns(Dependabot::Job) }
       attr_reader :job
+
+      # Git-tag based ecosystems such as pre-commit keep the tag as the dependency version ("v0.17.2"),
+      # while the checker reports the latest version without the prefix ("0.17.4"). Drop a leading "v"
+      # when the version class can't parse the raw tag, so both sides compare as semver.
+      sig { params(version_class: T.class_of(Dependabot::Version), version: String).returns(String) }
+      def comparable_version_string(version_class, version)
+        return version if version_class.correct?(version)
+
+        version.delete_prefix("v")
+      end
 
       sig do
         params(
