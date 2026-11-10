@@ -417,12 +417,14 @@ module Dependabot
         #   extract_version_suffix("1.0.0-linux")    # => "_linux"
         #   extract_version_suffix("1.0.0-RELEASE")  # => nil  (stable release qualifier)
         #   extract_version_suffix("1.0.0")          # => nil  (no suffix)
+        #   extract_version_suffix("v2")             # => nil  (leading "v" is a prefix, not a suffix)
         sig { params(version_string: T.nilable(String)).returns(T.nilable(String)) }
         def extract_version_suffix(version_string)
           return nil unless version_string
           return nil if version_string.match?(MAVEN_RELEASE_QUALIFIERS)
 
-          version_string.split(".").each do |part|
+          # Drop a tag-style "v" prefix ("v2", "v1.4.0") so it isn't read as a suffix
+          version_string.sub(/\A[vV](?=\d)/, "").split(".").each do |part|
             next if part.match?(/\A\d+\z/)
 
             suffix = extract_suffix_from_part(part)

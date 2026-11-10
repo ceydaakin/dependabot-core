@@ -132,6 +132,27 @@ RSpec.describe Dependabot::Maven::Shared::SharedVersionFinder do
         it { is_expected.to be true }
       end
 
+      context "when both versions have a leading v" do
+        let(:dependency_version) { "v2" }
+        let(:comparison_version) { "v3" }
+
+        it { is_expected.to be true }
+      end
+
+      context "when both versions have a leading v and a major bump" do
+        let(:dependency_version) { "v1.4.0" }
+        let(:comparison_version) { "v2.0.0" }
+
+        it { is_expected.to be true }
+      end
+
+      context "when both versions have a leading v and different suffixes" do
+        let(:dependency_version) { "v1.4.0-linux" }
+        let(:comparison_version) { "v2.0.0-win" }
+
+        it { is_expected.to be false }
+      end
+
       context "when equivalent release candidates are presented" do
         context "when comparing CR and RC variants" do
           context "when upgrading from -cr to -rc" do
