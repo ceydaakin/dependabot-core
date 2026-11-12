@@ -17,8 +17,9 @@ require "toml-rb"
 
 module Dependabot
   module Python
-    class DependencyGrapher < Dependabot::DependencyGraphers::Base
+    class DependencyGrapher < Dependabot::DependencyGraphers::Base # rubocop:disable Metrics/ClassLength
       require_relative "dependency_grapher/lockfile_generator"
+      require_relative "dependency_grapher/poetry_locked_versions"
       require_relative "dependency_grapher/requirements_layers"
 
       sig { override.returns(Dependabot::DependencyFile) }
@@ -80,7 +81,39 @@ module Dependabot
         groups + non_requirements_manifest_groups
       end
 
+      # Reports every version poetry.lock pins for a package (see PoetryLockedVersions), and links each one to
+      # every locked version of its children.
+      sig { override.returns(T::Hash[String, Dependabot::DependencyGraphers::ResolvedDependency]) }
+      def resolved_dependencies
+        prepare! unless prepared
+
+        @dependencies.each_with_object({}) do |dep, resolved|
+          subdependency_purls = safe_fetch_subdependencies(dep)
+                                .flat_map { |child| locked_versions_of(child) }
+                                .map { |child| build_purl(child) }
+
+          locked_versions_of(dep).each do |version_dep|
+            purl = build_purl(version_dep)
+            resolved[purl] = Dependabot::DependencyGraphers::ResolvedDependency.new(
+              package_url: purl,
+              direct: dep.top_level?,
+              runtime: dep.production?,
+              dependencies: subdependency_purls
+            )
+          end
+        end
+      end
+
       private
+
+      sig { params(dependency: Dependabot::Dependency).returns(T::Array[Dependabot::Dependency]) }
+      def locked_versions_of(dependency)
+        @poetry_locked_versions ||= T.let(
+          PoetryLockedVersions.new(python_package_manager == PoetryPackageManager::NAME ? poetry_lock : nil),
+          T.nilable(PoetryLockedVersions)
+        )
+        @poetry_locked_versions.expand(dependency)
+      end
 
       # When a pip/pip-compile directory is split into requirements layers, any non-requirements manifest
       # sharing that directory (setup.py, setup.cfg, pyproject.toml) would otherwise fall outside every layer

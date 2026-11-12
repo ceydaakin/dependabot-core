@@ -377,6 +377,62 @@ RSpec.describe Dependabot::Python::DependencyGrapher do
       end
     end
 
+    context "when poetry.lock pins a package at more than one version" do
+      let(:pyproject_toml) do
+        Dependabot::DependencyFile.new(
+          name: "pyproject.toml",
+          content: fixture("pyproject_files", "poetry_multiple_locked_versions.toml"),
+          directory: "/"
+        )
+      end
+
+      let(:poetry_lock_file) do
+        Dependabot::DependencyFile.new(
+          name: "poetry.lock",
+          content: fixture("dependency_grapher", "poetry_lock_multiple_locked_versions.lock"),
+          directory: "/"
+        )
+      end
+
+      let(:dependency_files) { [pyproject_toml, poetry_lock_file] }
+
+      it "reports every locked version of each package" do
+        expect(grapher.resolved_dependencies.keys).to contain_exactly(
+          "pkg:pypi/certifi@2026.10.23",
+          "pkg:pypi/charset-normalizer@3.5.2",
+          "pkg:pypi/idna@3.20",
+          "pkg:pypi/requests@2.32.5",
+          "pkg:pypi/requests@2.34.2",
+          "pkg:pypi/urllib3@1.26.20",
+          "pkg:pypi/urllib3@2.2.1"
+        )
+      end
+
+      it "keeps the direct and runtime flags of the package on each version" do
+        resolved_dependencies = grapher.resolved_dependencies
+
+        %w(urllib3@1.26.20 urllib3@2.2.1 requests@2.32.5 requests@2.34.2).each do |package|
+          resolved = resolved_dependencies.fetch("pkg:pypi/#{package}")
+          expect(resolved.direct).to be(true)
+          expect(resolved.runtime).to be(true)
+        end
+      end
+
+      it "links each version of a parent to every locked version of its children" do
+        resolved_dependencies = grapher.resolved_dependencies
+
+        %w(requests@2.32.5 requests@2.34.2).each do |package|
+          expect(resolved_dependencies.fetch("pkg:pypi/#{package}").dependencies).to contain_exactly(
+            "pkg:pypi/certifi@2026.10.23",
+            "pkg:pypi/charset-normalizer@3.5.2",
+            "pkg:pypi/idna@3.20",
+            "pkg:pypi/urllib3@1.26.20",
+            "pkg:pypi/urllib3@2.2.1"
+          )
+        end
+      end
+    end
+
     context "when a non-manifest .txt file is fetched alongside a real manifest" do
       let(:requirements_txt) do
         Dependabot::DependencyFile.new(
