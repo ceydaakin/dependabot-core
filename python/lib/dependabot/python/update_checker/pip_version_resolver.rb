@@ -67,7 +67,7 @@ module Dependabot
 
         sig { returns(T.nilable(Dependabot::Version)) }
         def latest_resolvable_version
-          candidate = latest_version_finder.latest_version(language_version: language_version_manager.python_version)
+          candidate = latest_version_finder.latest_version(language_version: release_python_version)
           return candidate if candidate.nil?
           return candidate if compatible_with_pinned_pyproject_dependencies?(candidate)
 
@@ -77,13 +77,13 @@ module Dependabot
         sig { returns(T.nilable(Dependabot::Version)) }
         def latest_resolvable_version_with_no_unlock
           latest_version_finder
-            .latest_version_with_no_unlock(language_version: language_version_manager.python_version)
+            .latest_version_with_no_unlock(language_version: release_python_version)
         end
 
         sig { returns(T.nilable(Dependabot::Version)) }
         def lowest_resolvable_security_fix_version
           candidate = latest_version_finder
-                      .lowest_security_fix_version(language_version: language_version_manager.python_version)
+                      .lowest_security_fix_version(language_version: release_python_version)
           return candidate if candidate.nil?
           return candidate if compatible_with_pinned_pyproject_dependencies?(candidate)
 
@@ -106,6 +106,12 @@ module Dependabot
 
         sig { returns(T::Array[Dependabot::SecurityAdvisory]) }
         attr_reader :security_advisories
+
+        # The Python version that candidate releases' `requires-python` must accept.
+        sig { returns(String) }
+        def release_python_version
+          language_version_manager.python_version
+        end
 
         sig { returns(LatestVersionFinder) }
         def latest_version_finder

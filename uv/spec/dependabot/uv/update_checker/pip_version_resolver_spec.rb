@@ -107,6 +107,57 @@ RSpec.describe Dependabot::Uv::UpdateChecker::PipVersionResolver do
         end
       end
     end
+
+    context "when requires-python allows a Python older than the pre-installed ones" do
+      let(:dependency_files) { [pyproject_file] }
+      let(:pyproject_file) do
+        Dependabot::DependencyFile.new(
+          name: "pyproject.toml",
+          content: <<~TOML
+            [project]
+            name = "repro"
+            version = "0.1.0"
+            requires-python = "#{requires_python}"
+            dependencies = []
+
+            [dependency-groups]
+            dev = ["#{dev_requirement}"]
+          TOML
+        )
+      end
+      let(:requires_python) { ">=3.8,<3.13" }
+      let(:dev_requirement) { "pytest-repeat>=0.9.3" }
+      let(:dependency_name) { "pytest-repeat" }
+      let(:dependency_version) { "0.9.3" }
+      let(:dependency_requirements) do
+        [{ file: "pyproject.toml", requirement: ">=0.9.3", groups: ["dev"], source: nil }]
+      end
+      let(:pypi_url) { "https://pypi.org/simple/pytest-repeat/" }
+      let(:pypi_response) do
+        <<~HTML
+          <html><body>
+          <a href="https://files.pythonhosted.org/pytest_repeat-0.9.3.tar.gz" data-requires-python="&gt;=3.7">pytest_repeat-0.9.3.tar.gz</a>
+          <a href="https://files.pythonhosted.org/pytest_repeat-0.9.4.tar.gz" data-requires-python="&gt;=3.9">pytest_repeat-0.9.4.tar.gz</a>
+          </body></html>
+        HTML
+      end
+
+      it "skips releases that drop the project's oldest Python" do
+        expect(latest_resolvable_version).to eq(Gem::Version.new("0.9.3"))
+      end
+
+      context "when the lower bound is a pre-installed Python" do
+        let(:requires_python) { ">=3.11" }
+
+        it { is_expected.to eq(Gem::Version.new("0.9.4")) }
+      end
+
+      context "when the dependency is limited by a Python marker" do
+        let(:dev_requirement) { "pytest-repeat>=0.9.3; python_version >= '3.9'" }
+
+        it { is_expected.to eq(Gem::Version.new("0.9.4")) }
+      end
+    end
   end
 
   describe "#latest_resolvable_version_with_no_unlock" do
